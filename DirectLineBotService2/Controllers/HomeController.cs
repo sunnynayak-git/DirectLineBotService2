@@ -1,8 +1,11 @@
-﻿using Microsoft.Bot.Connector.DirectLine;
+﻿using DirectLineBotService2.Models;
+using Microsoft.Bot.Connector.DirectLine;
 using Newtonsoft.Json;
 using System;
+using System.Collections.Generic;
 using System.Configuration;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Mvc;
 namespace DirectLine.Controllers
@@ -23,8 +26,13 @@ namespace DirectLine.Controllers
             = @"https://directline.botframework.com";
         private static string directLineSecret = ConfigurationManager.AppSettings["DirectLineSecret"];
         private static string botId = ConfigurationManager.AppSettings["BotId"];
+        private static Dictionary<string, DirectLineConversationStateModel> activeConversationsState = new Dictionary<string, DirectLineConversationStateModel>();
         // to create a new message
 
+        public async Task PostAsync(ConversationActivityModel conversationActivityModel)
+        {
+            await TalkToTheBot(conversationActivityModel);
+        }
 
         public async Task<ActionResult> Index()
         {
@@ -35,7 +43,7 @@ namespace DirectLine.Controllers
             {
                 // Pass the message to the Bot 
                 // and get the response
-                objChat = await TalkToTheBot("Hello");
+                //objChat = await TalkToTheBot("Hello");
             }
             else
             {
@@ -46,54 +54,40 @@ namespace DirectLine.Controllers
         }
 
 
-        private async Task<Chat> TalkToTheBot(string paramMessage)
+        private async Task TalkToTheBot(ConversationActivityModel conversationActivityModel)
         {
             // Connect to the DirectLine service
             DirectLineClient client = new DirectLineClient(directLineSecret);
-            // Try to get the existing Conversation
-            Conversation conversation =
-                System.Web.HttpContext.Current.Session["conversation"] as Conversation;
-            // Try to get an existing watermark 
-            // the watermark marks the last message we received
-            string watermark =
-                System.Web.HttpContext.Current.Session["watermark"] as string;
-            if (conversation == null)
+            DirectLineConversationStateModel conversationState;
+            if (!activeConversationsState.ContainsKey(conversationActivityModel.Id.ToString()))
             {
-                // There is no existing conversation
-                // start a new one
-                conversation = await client.Conversations.StartConversationAsync();
+                Conversation conversation = await client.Conversations.StartConversationAsync();
+                conversationState = ConversationActorStateModelMapper(conversation);
+                activeConversationsState.Add(conversationActivityModel.Id.ToString(), conversationState);
+                Thread thread = new Thread(new ThreadStart(async () => await ReadBotMessagesAsync(client, conversationState.ConversationId, botId)));
+                thread.IsBackground = false;
+                thread.Name = conversationState.ConversationId;
+                thread.Start();
+            }
+            else
+            {
+                conversationState = activeConversationsState[conversationActivityModel.Id.ToString()];
             }
             // Use the text passed to the method (by the user)
             // to create a new message
             Activity userMessage = new Activity
             {
-                From = new ChannelAccount(User.Identity.Name),
-                Text = paramMessage,
+                From = new ChannelAccount(conversationActivityModel.UserIdentifier),
+                Text = conversationActivityModel.MessageText,
                 Type = ActivityTypes.Message
             };
             // Post the message to the Bot
-            await client.Conversations.PostActivityAsync(conversation.ConversationId, userMessage);
-            // Get the response as a Chat object
-            Chat objChat =
-                await ReadBotMessagesAsync(client, conversation.ConversationId, watermark);
-            // Save values
-            System.Web.HttpContext.Current.Session["conversation"] = conversation;
-            System.Web.HttpContext.Current.Session["watermark"] = objChat.watermark;
-            objChat.ConvertationId = conversation.ConversationId;
-            // Return the response as a Chat object
-            return objChat;
+            await client.Conversations.PostActivityAsync(conversationState.ConversationId, userMessage);
         }
 
-
-
-        private async Task<Chat> ReadBotMessagesAsync(
-            DirectLineClient client, string conversationId, string watermark)
+        public async Task ReadBotMessagesAsync(DirectLineClient client, string conversationId, string botId, string watermark= null)
         {
-            // Create an Instance of the Chat object
-            Chat objChat = new Chat();
-            // We want to keep waiting until a message is received
-            bool messageReceived = false;
-            while (!messageReceived)
+            while (true)
             {
                 // Retrieve the activity set from the bot.
                 var activitySet = await client.Conversations.GetActivitiesAsync(conversationId, watermark);
@@ -106,62 +100,32 @@ namespace DirectLine.Controllers
                 // Analyze each activity in the activity set.
                 foreach (Activity activity in activities)
                 {
-                    // Set the text response
-                    // to the message text
-                    objChat.ChatResponse
-                        += " "
-                        + activity.Text.Replace("\n\n", "<br />");
-                    // Are there any attachments?
-                    if (activity.Attachments != null)
-                    {
-                        // Extract each attachment from the activity.
-                        foreach (Attachment attachment in activity.Attachments)
-                        {
-                            switch (attachment.ContentType)
-                            {
-                                case "image/png":
-                                    // Set the text response as an HTML link
-                                    // to the image
-                                    objChat.ChatResponse
-                                        += " "
-                                        + attachment.ContentUrl;
-                                    break;
-                            }
-                        }
-                    }
+                   //Update Watermark in dictionary
+                   //Send Notification to User
                 }
-                // Mark messageReceived so we can break 
-                // out of the loop
-                messageReceived = true;
             }
-            // Set watermark on the Chat object that will be 
-            // returned
-            objChat.watermark = watermark;
-            // Return a response as a Chat object
-            return objChat;
+            
         }
 
-        #region public async Task<ActionResult> Index(Chat model)
-        [HttpPost]
-        public async Task<ActionResult> Index(Chat model)
+        private DirectLineConversationStateModel ConversationActorStateModelMapper(Conversation conversation, string waterMark = null)
         {
-            // Create an Instance of the Chat object
-            Chat objChat = new Chat();
-            // Only call Bot if logged in
-            if (User.Identity.IsAuthenticated)
+            DirectLineConversationStateModel conversationState = null;
+            if (conversation != null)
             {
-                // Pass the message to the Bot 
-                // and get the response
-                objChat = await TalkToTheBot(model.ChatMessage);
+                conversationState = new DirectLineConversationStateModel()
+                {
+                    ConversationId = conversation.ConversationId,
+                    ETag = conversation.ETag,
+                    ExpiresIn = conversation.ExpiresIn,
+                    ReferenceGrammarId = conversation.ReferenceGrammarId,
+                    StreamUrl = conversation.StreamUrl,
+                    Token = conversation.Token,
+                    Watermark = waterMark
+                };
+
             }
-            else
-            {
-                objChat.ChatResponse = "Must be logged in";
-            }
-            // Return response
-            return View(objChat);
+            return conversationState;
         }
-        #endregion
     }
 
 
