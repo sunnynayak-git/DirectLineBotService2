@@ -11,17 +11,7 @@ using System.Threading.Tasks;
 using System.Web.Mvc;
 namespace DirectLine.Controllers
 {
-    #region public class Chat
-    public class Chat
-    {
-        public string ChatMessage { get; set; }
-        public string ChatResponse { get; set; }
-        public string watermark { get; set; }
-
-        public string ConvertationId { get; set; }
-    }
-    #endregion
-    public class HomeController : Controller
+    public class RelayServiceController : Controller
     {
         private static string directLineSecret = ConfigurationManager.AppSettings["DirectLineSecret"];
         private static string botId = ConfigurationManager.AppSettings["BotId"];
@@ -32,7 +22,7 @@ namespace DirectLine.Controllers
         /// </summary>
         /// <param name="conversationActivityModel"></param>
         /// <returns></returns>
-        public async Task PostAsync(ConversationActivityModel conversationActivityModel)
+        public async Task PostActivityAsync(ConversationActivityModel conversationActivityModel)
         {
             await TalkToTheBot(conversationActivityModel);
         }
@@ -45,26 +35,26 @@ namespace DirectLine.Controllers
         private async Task TalkToTheBot(ConversationActivityModel conversationActivityModel)
         {
             // Connect to the DirectLine service
-            using (DirectLineClient client = new DirectLineClient(directLineSecret))
-            {
-                DirectLineConversationStateModel conversationState;
-                bool wasConnectionExisted;
-                if (!activeConversationsState.ContainsKey(conversationActivityModel.Id.ToString()))
-                {
-                    Conversation conversation = await client.Conversations.StartConversationAsync();
-                    conversationState = ConversationActorStateModelMapper(conversation);
-                    activeConversationsState.Add(conversationActivityModel.Id.ToString(), conversationState);
-                    wasConnectionExisted = false;
-                }
-                else
-                {
-                    conversationState = activeConversationsState[conversationActivityModel.Id];
-                    client.Conversations.ReconnectToConversation(conversationState.ConversationId);
-                    wasConnectionExisted = true;
-                }
+            DirectLineClient client = new DirectLineClient(directLineSecret);
 
-                await StartPollingAsync(client, conversationState.ConversationId, conversationActivityModel, wasConnectionExisted);
+            DirectLineConversationStateModel conversationState;
+            bool wasConnectionExisted;
+            if (!activeConversationsState.ContainsKey(conversationActivityModel.Id.ToString()))
+            {
+                Conversation conversation = await client.Conversations.StartConversationAsync();
+                conversationState = ConversationActorStateModelMapper(conversation);
+                activeConversationsState.Add(conversationActivityModel.Id.ToString(), conversationState);
+                wasConnectionExisted = false;
             }
+            else
+            {
+                conversationState = activeConversationsState[conversationActivityModel.Id];
+                client.Conversations.ReconnectToConversation(conversationState.ConversationId);
+                wasConnectionExisted = true;
+            }
+
+            await SendActivityToBotAsync(client, conversationState.ConversationId, conversationActivityModel, wasConnectionExisted);
+
         }
 
         /// <summary>
@@ -75,12 +65,12 @@ namespace DirectLine.Controllers
         /// <param name="conversationActivityModel"></param>
         /// <param name="wasConnectionExisted"></param>
         /// <returns></returns>
-        private static async Task StartPollingAsync(DirectLineClient client, string conversationId, ConversationActivityModel conversationActivityModel, bool wasConnectionExisted)
+        private static async Task SendActivityToBotAsync(DirectLineClient client, string conversationId, ConversationActivityModel conversationActivityModel, bool wasConnectionExisted)
         {
             // Start the bot message reader in a separate thread.
             if (!wasConnectionExisted)
             {
-                new Thread(async () => await PollMessagesAsync(client, conversationId, conversationActivityModel.Id)).Start();
+                new Thread(async () => await PollActivitiesAsync(client, conversationId, conversationActivityModel.Id)).Start();
             }
 
             Activity userMessage = new Activity
@@ -101,7 +91,7 @@ namespace DirectLine.Controllers
         /// <param name="conversationId"></param>
         /// <param name="Id"></param>
         /// <returns></returns>
-        public static async Task PollMessagesAsync(DirectLineClient client, string conversationId, string Id)
+        public static async Task PollActivitiesAsync(DirectLineClient client, string conversationId, string Id)
         {
             string watermark = null;
             while (true)
@@ -130,7 +120,7 @@ namespace DirectLine.Controllers
                         }
                     }
                 }
-                catch(ThreadAbortException ex)
+                catch (ThreadAbortException ex)
                 {
                     Trace.TraceError(ex.StackTrace);
                 }
