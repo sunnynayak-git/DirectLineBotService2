@@ -7,7 +7,7 @@ namespace DirectLineBotService2.Models
 {
     public class ConversationActivityModel
     {
-        public Guid Id { get; set; }
+        public string Id { get; set; }
 
         public string UserIdentifier { get; set; }
 
